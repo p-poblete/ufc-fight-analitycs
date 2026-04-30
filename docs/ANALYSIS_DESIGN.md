@@ -1,0 +1,55 @@
+### Pregunta Inicial
+- **Hipótesis en Bruto**:
+	- Quien tiene mayor porcentaje de victorias Strikers o Grapplers?
+	- Quien tiene peleas mas largas Strikers o Grapplers?
+	- Cual es el porcentaje de victorias por tipo de peleador? (Strikers Vs Grapplers)
+	- Que marca la diferencia en los encuentros?
+	- Con que atributos esta relacionada la apuesta del peleador?
+- **Hipótesis Finales (Base)**:
+	- Existe una relación ente las apuestas (Favorito Vs UnderDog) con la victoria?
+	- De qué manera esta relacionado el arquetipo del peleador con el resultado de la pelea? (Tiempo, Manera de Finalización)
+	- Existe un patrón que explique el fenómeno de "La Invasión Daguestani"?
+### Análisis Exploratorio de Datos
+-  **Atributos Importantes**:
+	- **Del Peleador**:
+		- **Características**:
+			- **R_fighter/B_fighter**: Nombre del peleador.
+			- **Gender**: Genero del peleador.
+			- **R_Height_cms/B_Height_cms**: Estatura del peleador en centímetros.
+			- **R_Reach_cms/B_Reach_cms**: Envergadura del peleador en centímetros.
+			- **R_Weight_lbs/B_Weight_lbs**: Peso del peleador en libras.
+			- **R_age/B_age**: Edad del peleador.
+			- **R_Stance/B_Stance**: Postura del peleador. (Zurda o Ortodoxa)
+		- **Récord**:
+			- **R_wins/B_wins**: Peleas ganadas del peleador.
+				- **R_win_by_Decision_Majority/B_win_by_Decision_Majority**: Peleas ganadas por decisión mayoritaria del peleador. (Dos jueces ven ganador a uno y el tercero marca empate)
+				- **R_win_by_Decision_Split/B_win_by_Decision_Split**: Peleas ganadas por decisión dividida del peleador. (Dos jueces ven ganador a uno y el tercero al otro)
+				- **R_win_by_Decision_Unanimous/B_win_by_Decision_unanimous**: Peleas ganadas por decisión unanime del peleador. (Tres jueces ven ganador a un peleador)
+				- **R_win_by_KO/TKO/B_win_by_KO/TKO**: Peleas ganadas por KO (Knockout) o TKO (Knockout Tecnico).
+				- **R_win_by_Submission/B_win_by_Submission**: Peleas ganadas por sumisión.
+			- **R_losses/B_losses**: Peleas perdidas del peleador.
+	- **De la Pelea**:
+		- **Resultado**:
+			- **Winner**: Que peleador ganó la pelea. (Red/Blue)
+			- **finish**: Resultado de la pelea.
+			- **finish_details**: Cómo acabó la pelea.
+		- **Apuestas**:
+			- **R_odds/B_odds**: Apuestas por peleador.
+			- **R_sub_odds/B_sub_odds**: Apuestas de finalizacion por sumisión por parte por peleador.
+			- **R_ko_odds/B_ko_odds**: Apuestas de finalizacion por knockout por parte del peleador.
+		- **Antecedentes**:
+			- **R_current_win_streak/B_current_win_streak**: Racha de peleas ganadas del peleador. 
+			- **R_current_lose_streak/B_current_lose_streak**: Racha de peleas perdidas del peleador. 
+		- **Características**:
+			- **Weight_class**: División de peso de la pelea.
+			- **No_of_rounds**: Numero de asaltos de la pelea.
+		- **Acciones**:
+			- **R_avg_SIG_STR_landed/B_avg_SIG_STR_landed**: Golpes significativos aterrizados por minuto.
+			- **R_avg_SIG_STR_pct/B_avg_SIG_STR_pct**: Precisión de los golpes significativos.
+			- **R_avg_SUB_ATT/B_avg_SUB_ATT**: Promedio de intentos de sumisión por cada 15 minutos. 
+			- **R_avg_TD_landed/B_avg_TD_landed**: Promedio de derribos aterrizados por cada 15 minutos.
+			- **R_avg_TD_pct/B_avg_TD_pct**: Precisión de los derribos.
+- **Estructura de Almacenamiento**: (Propuestas)
+	- **Lista de Listas/Matrices/Diccionario**:
+		1. Cada peleador es un nodo, el contendrá la información de cada una de sus peleas.
+		2. nodo_peleador, apunta a su información y a nodo_pelea (la cual contiene su propia información y esta indexada de alguna manera por nodo_peleador del adversario).
