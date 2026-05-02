@@ -10,6 +10,9 @@
 	- De qué manera esta relacionado el arquetipo del peleador con el resultado de la pelea? (Tiempo, Manera de Finalización)
 	- Existe un patrón que explique el fenómeno de "La Invasión Daguestani"?
 ### Análisis Exploratorio de Datos
+- **Naturaleza del Dataset**:
+	- Cada fila del Dataset representa una pelea, esta contiene los datos del evento y peleadores involucrados **(Rojo y Azul)**. Nuestro análisis estará relacionado directamente con las acciones de los peleadores a lo largo de sus peleas **(Golpes significativos aterrizados por minuto, precisión de los golpes significativos, promedio de intentos de sumisión por cada 15 minutos, promedio de derribos aterrizados por cada 15 minutos y precisión de los derribos)** sus resultados **(Victoria, derrota o empate)** y cómo se relacionan con las apuestas realizadas hacia ellos.
+	- **En resumen:** Cada fila representa un combate individual **(Single Fight Record)**. Estructurada en pares competitivos **(R_fighter vs B_fighter)**, que permiten el análisis de diferencias técnicas **(Performance Gaps)** y su correlación con los mercados de apuestas.
 -  **Atributos Importantes**:
 	- **Del Peleador**:
 		- **Características**:
