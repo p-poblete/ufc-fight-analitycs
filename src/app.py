@@ -1211,8 +1211,9 @@ if "peleador_1" in st.session_state and "peleador_2" in st.session_state:
     with col1:
         img, info = st.columns([1, 2])
         with img:
-            st.image("perfil_vacio.png"#, caption="Foto del peleador"
-                     )
+            #st.image("perfil_vacio.png"#, caption="Foto del peleador"
+            #         )
+            st.write("Imagen referencial del peleador")
         with info:
             st.markdown(f"**Nombre**: {n1}")
             st.markdown(f"**Edad**: {int(perf_p1['age'].values)}")
