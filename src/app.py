@@ -1020,7 +1020,7 @@ def generar_analisis_pca(df_ufc):
         'avg_SIG_STR_landed', 'avg_SIG_STR_pct', 
         'avg_TD_landed', 'avg_TD_pct', 
         'avg_SUB_ATT', 'avg_REV', 'avg_PASS',
-        'age', 'Height_cms', 'Reach_cms', 'odds', 
+        'age', 'Height_cms', 'Reach_cms', 'Weight_lbs','odds', 
         'current_win_streak', 'current_lose_streak',
         #'win_by_KO/TKO', 'win_by_Submission', 'wins',
         #'win_by_Decision_Majority', 'win_by_Decision_Split', 'win_by_Decision_Unanimous',
@@ -1369,7 +1369,6 @@ if "peleador_1" in st.session_state and "peleador_2" in st.session_state:
                 "**Cómo leer el mapa:** "
                 "El **Eje Horizontal (PC1)** representa la **Morfología**: hacia la derecha están los peleadores altos y con mucho alcance (`Reach`, `Height`). "
                 "El **Eje Vertical (PC2)** representa la **Estrategia de Suelo**: hacia arriba están los expertos en lucha y derribos (`TD_landed`, `TD_pct`, `SUB_ATT`). "
-                "Fíjate en `odds` apuntando hacia abajo: confirma de forma matemática que el favoritismo está ligado a peleadores jóvenes (`age` opuesto) y de alto volumen de golpeo."
             )
     else:
         st.info(
