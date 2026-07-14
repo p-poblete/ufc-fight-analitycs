@@ -2,1380 +2,441 @@ import streamlit as st
 import pandas as pd
 import kagglehub
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import plotly.express as px
+import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from sklearn.manifold import TSNE
+from sklearn.cluster import KMeans
 
-st.set_page_config(layout="wide")
+try:
+    import umap
+    UMAP_DISPONIBLE = True
+except ImportError:
+    UMAP_DISPONIBLE = False
 
-st.title("Dashboard :red[_UFC_]")
-st.divider()
+# Configuración de página con estilos CSS para eliminar paddings, scrollbar y aplicar colores personalizados
+st.set_page_config(layout="wide", page_title="UFC Analytics", page_icon="🥊")
 
-def clasificar_arquetipo_base(row):
-    if row['avg_SIG_STR_landed'] > 4.0:
-        return "Striker"
-    elif row['avg_TD_landed'] > 2.0:
-        return "Grappler"
-    return "Balanceado"
+# Inicializar estados de selección
+if "peleadores_seleccionados" not in st.session_state:
+    st.session_state.peleadores_seleccionados = []
+if "limpiar_contador" not in st.session_state:
+    st.session_state.limpiar_contador = 0
 
-def calcular_retorno(odds, inversion, gano):
-    if not gano:
-        return -inversion
-    if pd.isna(odds):
-        return None
-    if odds > 0:
-        ganancia = inversion * (odds / 100)
-    else:
-        ganancia = inversion * (100 / abs(odds))
-    return round(ganancia, 2)
-
-def get_tipo_apuesta(odds):
-    if pd.isna(odds):
-        return None
-    elif odds < -200:
-        return 'Gran favorito'
-    elif odds < 0:
-        return 'Favorito'
-    elif odds < 150:
-        return "Pick'em"
-    elif odds < 300:
-        return 'Underdog'
-    else:
-        return 'Gran underdog'
-    
-def get_historial_apuestas(nombre, df_ufc, inversion, col_r, col_b):
-    mask   = (df_ufc['R_fighter'] == nombre) | (df_ufc['B_fighter'] == nombre)
-    peleas = df_ufc[mask].copy()
-
-    registros = []
-    for n_pelea, (_, row) in enumerate(peleas.iterrows(), start=1):
-        lado = 'R' if row['R_fighter'] == nombre else 'B'
-        winner = row['Winner']
+# CSS para Azul Profundo (#0B132B) y Rojo UFC (#E63946)
+st.markdown("""
+    <style>
+        /* Fondo de la aplicación */
+        .stApp {
+            background-color: #0B132B;
+            color: #FFFFFF;
+        }
+        .block-container {padding-top: 1rem; padding-bottom: 0rem; padding-left: 2rem; padding-right: 2rem;}
+        h1, h2, h3, h4, h5 {margin-top: 0.2rem !important; margin-bottom: 0.2rem !important; color: #FFFFFF !important;}
+        hr {margin-top: 0.4rem !important; margin-bottom: 0.4rem !important; border-color: rgba(230, 57, 70, 0.3) !important;}
         
-        if winner == 'Draw':
-            resultado, gano = 'Empate', False
-        elif (winner == 'Red' and lado == 'R') or (winner == 'Blue' and lado == 'B'):
-            resultado, gano = 'Victoria', True
-        else:
-            resultado, gano = 'Derrota', False
-
-        odds    = row.get(col_r if lado == 'R' else col_b, None)
-        retorno = calcular_retorno(odds, inversion, gano)
-        tipo    = get_tipo_apuesta(odds)
-        oponente= row['B_fighter'] if lado == 'R' else row['R_fighter']
+        /* Personalización de Tabs (Pestañas) */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 4px;
+            background-color: rgba(255, 255, 255, 0.03);
+            border-radius: 4px;
+            padding: 2px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            padding-top: 4px;
+            padding-bottom: 4px;
+            color: #8D99AE !important;
+        }
+        .stTabs [data-baseweb="tab"][aria-selected="true"] {
+            color: #E63946 !important;
+            border-bottom-color: #E63946 !important;
+            font-weight: bold;
+        }
         
-        if pd.notna(row['date']):
-            fecha = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
-        else:
-            fecha = 'N/A'
-
-        registros.append({
-            'peleador' : nombre,
-            'n_pelea'  : n_pelea,
-            'resultado': resultado,
-            'odds'     : odds,
-            'tipo'     : tipo,
-            'retorno'  : retorno,
-            'oponente' : oponente,
-            'fecha'    : fecha,
-            'finish'   : row.get('finish', 'N/A'),
-        })
-
-    return pd.DataFrame(registros)
-
-def get_historial_scatter(nombre, df_ufc):
-    """
-    Filtra y procesa los combates históricos de un peleador específico para
-    estructurar las métricas de rendimiento por round y duración del combate.
-    """
-    mask   = (df_ufc['R_fighter'] == nombre) | (df_ufc['B_fighter'] == nombre)
-    peleas = df_ufc[mask].copy()
-
-    registros = []
-    for n_pelea, (_, row) in enumerate(peleas.iterrows(), start=1):
-        winner = row['Winner']
+        /* Botón Primario en Rojo */
+        .stButton>button[kind="primary"] {
+            background-color: #E63946 !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 4px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+        .stButton>button[kind="primary"]:hover {
+            background-color: #B51A2B !important;
+            box-shadow: 0 0 10px rgba(230, 57, 70, 0.5);
+        }
         
-        if winner == 'Draw':
-            resultado = 'Empate'
-        elif (winner == 'Red'  and row['R_fighter'] == nombre) or \
-             (winner == 'Blue' and row['B_fighter'] == nombre):
-            resultado = 'Victoria'
-        else:
-            resultado = 'Derrota'
+        /* Sidebar estilizado */
+        section[data-testid="stSidebar"] {
+            background-color: #1C2541 !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-        lado = 'R' if row['R_fighter'] == nombre else 'B'
-        
-        dur_secs = row.get('total_fight_time_secs',    None)
-        sig_str  = row.get(f'{lado}_avg_SIG_STR_landed',   None)
-        sig_pct  = row.get(f'{lado}_avg_SIG_STR_pct',      None)
-        td_land  = row.get(f'{lado}_avg_TD_landed',         None)
-        sub_att  = row.get(f'{lado}_avg_SUB_ATT',           None)
-
-        if pd.notna(row['date']):
-            fecha = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
-        else:
-            fecha = 'N/A'
-
-        registros.append({
-            'peleador'   : nombre,
-            'n_pelea'    : n_pelea,
-            'resultado'  : resultado,
-            'dur_min'    : dur_secs / 60 if dur_secs else None,
-            'sig_str'    : sig_str,
-            'sig_str_pct': sig_pct,
-            'td_landed'  : td_land,
-            'sub_att'    : sub_att,
-            'finish'     : row.get('finish', 'N/A'),
-            'oponente'   : row['B_fighter'] if lado == 'R' else row['R_fighter'],
-            'fecha'      : fecha,
-        })
-
-    return pd.DataFrame(registros)
-
-def get_historial_tiempos(nombre, df_ufc):
-    """
-    Extrae la duración en minutos de todas las peleas del peleador.
-    """
-    mask = (df_ufc['R_fighter'] == nombre) | (df_ufc['B_fighter'] == nombre)
-    peleas = df_ufc[mask].copy()
-    
-    registros = []
-    for _, row in peleas.iterrows():
-        dur_secs = row.get('total_fight_time_secs', None)
-        if pd.isna(dur_secs) or dur_secs <= 0:
-            continue
-            
-        registros.append({
-            'peleador': nombre,
-            'dur_min': dur_secs / 60
-        })
-    return pd.DataFrame(registros)
+st.title("Dashboard :red[_UFC Analytics_]")
 
 # 1. Carga de datos
 @st.cache_data
 def cargar_y_procesar_todo():
     path = kagglehub.dataset_download("mdabbert/ultimate-ufc-dataset")
     df_completo = pd.read_csv(f"{path}/ufc-master.csv")
-    
+
     df_completo = df_completo.rename(columns={
-        'R_draw': 'R_draws',
-        'B_draw': 'B_draws',
-        'R_current_lose_streak': 'R_current_loss_streak',
-        'B_current_lose_streak': 'B_current_loss_streak'
+        'R_draw': 'R_draws', 'B_draw': 'B_draws',
+        'R_current_lose_streak': 'R_current_loss_streak', 'B_current_lose_streak': 'B_current_loss_streak',
+        'R_win_by_KO/TKO': 'R_win_by_KO_TKO', 'B_win_by_KO/TKO': 'B_win_by_KO_TKO',
+        'R_win_by_Submission': 'R_win_by_Submission', 'B_win_by_Submission': 'B_win_by_Submission'
     })
 
+    for prefix in ['R_', 'B_']:
+        dec_cols = [c for c in df_completo.columns if c.startswith(f"{prefix}win_by_Decision")]
+        df_completo[f"{prefix}win_by_Decision_Total"] = df_completo[dec_cols].sum(axis=1) if dec_cols else 0
+
     cols_interes = [
-        'fighter', 'avg_SIG_STR_landed', 'avg_SIG_STR_pct', 
-        'avg_SUB_ATT', 'avg_TD_landed', 'avg_TD_pct', 
+        'fighter', 'avg_SIG_STR_landed', 'avg_SIG_STR_pct',
+        'avg_SUB_ATT', 'avg_TD_landed', 'avg_TD_pct',
         'Height_cms', 'Reach_cms', 'Weight_lbs', 'age', 'Stance',
-        'wins', 'losses', 'draws', 'current_win_streak', 'current_loss_streak'
+        'wins', 'losses', 'draws', 'current_win_streak', 'current_loss_streak',
+        'win_by_KO_TKO', 'win_by_Submission', 'win_by_Decision_Total'
     ]
-    
+
     df_red = df_completo[['R_' + col for col in cols_interes]].copy()
-    df_red.columns = cols_interes
-    
+    df_red.columns = [col.replace('_Total', '') for col in cols_interes]
     df_blue = df_completo[['B_' + col for col in cols_interes]].copy()
-    df_blue.columns = cols_interes
-    
-    df_red_blue = pd.concat([df_red, df_blue], axis=0, ignore_index=True)
-    
-    df_red_blue = df_red_blue.sort_values(by='age', ascending=True)
-    
+    df_blue.columns = [col.replace('_Total', '') for col in cols_interes]
+
+    df_red_blue = pd.concat([df_red, df_blue], axis=0, ignore_index=True).sort_values(by='age')
+
     df_acciones = df_red_blue.groupby('fighter').agg({
-        'avg_SIG_STR_landed': 'mean',
-        'avg_SIG_STR_pct': 'mean',
-        'avg_SUB_ATT': 'mean',
-        'avg_TD_landed': 'mean',
-        'avg_TD_pct': 'mean'
+        'avg_SIG_STR_landed': 'mean', 'avg_SIG_STR_pct': 'mean',
+        'avg_SUB_ATT': 'mean', 'avg_TD_landed': 'mean', 'avg_TD_pct': 'mean'
     }).reset_index()
-    
-    df_acciones['arquetipo_base'] = df_acciones.apply(clasificar_arquetipo_base, axis=1)
-    
+
     df_perfil = df_red_blue.groupby('fighter').agg({
-        'Height_cms': 'last',
-        'Reach_cms': 'last',
-        'Weight_lbs': 'last',
-        'age': 'max',
-        'Stance': 'last',
-        'wins': 'last',
-        'losses': 'last',
-        'draws': 'last',
-        'current_win_streak': 'last',
-        'current_loss_streak': 'last'
+        'Height_cms': 'last', 'Reach_cms': 'last', 'Weight_lbs': 'last', 'age': 'max', 'Stance': 'last',
+        'wins': 'last', 'losses': 'last', 'draws': 'last', 'current_win_streak': 'last', 'current_loss_streak': 'last',
+        'win_by_KO_TKO': 'sum', 'win_by_Submission': 'sum', 'win_by_Decision': 'sum'
     }).reset_index()
-    
+
     r_filtros = df_completo[['R_fighter', 'weight_class', 'gender']].rename(columns={'R_fighter': 'fighter'})
     b_filtros = df_completo[['B_fighter', 'weight_class', 'gender']].rename(columns={'B_fighter': 'fighter'})
     fighters_info = pd.concat([r_filtros, b_filtros]).drop_duplicates(subset='fighter').dropna()
     fighters_info['gender'] = fighters_info['gender'].str.title()
-    
+
     return df_completo, fighters_info, df_acciones, df_perfil
 
 df_ufc, fighters_info, df_peleador_acciones, df_peleador_perfil = cargar_y_procesar_todo()
 
-def generar_radar_chart(lista_peleadores, df_acciones):
-    """
-    Genera un gráfico de radar comparativo para los peleadores seleccionados.
-    """
-    cols_norm = ['avg_SIG_STR_landed', 'avg_SIG_STR_pct', 'avg_SUB_ATT', 'avg_TD_landed', 'avg_TD_pct']
-    
-    categorias = [
-        'Sig. Strikes<br>lanzados',
-        'Precisión<br>strike',
-        'Intentos<br>sumisión',
-        'Takedowns<br>lanzados',
-        'Precisión<br>takedown'
-    ]
-    
-    df_sel = df_acciones[df_acciones['fighter'].isin(lista_peleadores)].copy()
-    
-    maximos_globales = {col: df_acciones[col].max() for col in cols_norm}
-    
-    df_norm = df_sel.copy()
-    for col in cols_norm:
-        max_global = maximos_globales[col]
-        df_norm[col] = df_norm[col] / max_global if max_global > 0 else 0
-        
-    colores = [
-        ('#378ADD', 'rgba(55,138,221,0.10)'),
-        ('#D85A30', 'rgba(216,90,48,0.10)'),
-    ]
-    
-    fig = go.Figure()
-    
-    for i, (_, row_norm) in enumerate(df_norm.iterrows()):
-        nombre   = row_norm['fighter']
-        row_real = df_sel[df_sel['fighter'] == nombre].iloc[0]
-        
-        vals_norm = [row_norm[c] for c in cols_norm]
-        tooltip   = [
-            f'{cat.replace("<br>", " ")}: {row_real[col]:.2f}'
-            for cat, col in zip(categorias, cols_norm)
-        ]
-        
-        color_line, color_fill = colores[i % len(colores)]
-        
-        fig.add_trace(go.Scatterpolar(
-            r             = vals_norm + [vals_norm[0]],
-            theta         = categorias + [categorias[0]],
-            name          = nombre,
-            text          = tooltip + [tooltip[0]],
-            hovertemplate = '%{text}<extra></extra>',
-            line          = dict(color=color_line, width=2),
-            fill          = 'toself',
-            fillcolor     = color_fill,
-            marker        = dict(size=5, color=color_line),
-        ))
-        
-    fig.update_layout(
-        polar=dict(
-            bgcolor='rgba(0,0,0,0)',
-            radialaxis=dict(
-                visible  = True,
-                range    = [0,1],
-                tickvals = [0.25, 0.5, 0.75, 1.0],
-                ticktext = ['25%', '50%', '75%', '100%'],
-                tickfont = dict(size=9, color='gray'),
-                gridcolor= 'rgba(128,128,128,0.15)',
-            ),
-            angularaxis=dict(
-                tickfont = dict(size=11),
-                gridcolor= 'rgba(128,128,128,0.15)',
-            ),
-        ),
-        legend=dict(orientation='h', yanchor='bottom', y=-0.15, xanchor='center', x=0.5),
-        title=dict(text='Acciones de Combate', x=0, font=dict(size=14, color='gray')),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor ='rgba(0,0,0,0)',
-        height=450,
-        margin=dict(t=40, b=60, l=60, r=60),
-    )
-    
-    return fig
-
-def generar_donas_finalizaciones(lista_peleadores, df_ufc):
-    """
-    Genera un subplot horizontal con gráficos de dona sobre cómo finalizan sus peleas ganadas.
-    """
-    color_map = {
-        'KO/TKO': '#D85A30', 'SUB': '#378ADD', 'DEC': '#1D9E75', 
-        'S-DEC': '#9B59B6', 'M-DEC': '#F39C12', 'U-DEC': '#1D9E75', 
-        'CNC': '#888780', 'DQ': '#888780',
-    }
-
-    rows = 1
-    cols = 2
-    specs = [[{'type': 'pie'}, {'type': 'pie'}]]
-
-    fig = make_subplots(
-        rows=rows, cols=cols,
-        specs=specs,
-        subplot_titles=lista_peleadores,
-    )
-
-    for i, nombre in enumerate(lista_peleadores):
-        col_idx = i + 1
-        
-        mask = (df_ufc['R_fighter'] == nombre) | (df_ufc['B_fighter'] == nombre)
-        peleas = df_ufc[mask][['finish', 'Winner', 'R_fighter', 'B_fighter']].copy()
-        
-        peleas_ganadas = peleas[
-            ((peleas['Winner'] == 'Red')  & (peleas['R_fighter'] == nombre)) |
-            ((peleas['Winner'] == 'Blue') & (peleas['B_fighter'] == nombre))
-        ]
-        
-        finalizaciones = peleas_ganadas['finish'].value_counts()
-        
-        if finalizaciones.empty:
-            continue
-        
-        labels = finalizaciones.index.tolist()
-        values = finalizaciones.values.tolist()
-        colors = [color_map.get(l, '#888780') for l in labels]
-        
-        fig.add_trace(
-            go.Pie(
-                labels=labels,
-                values=values,
-                name=nombre,
-                marker=dict(colors=colors, line=dict(color='rgba(0,0,0,0.2)', width=1)),
-                textinfo='label+percent',
-                hovertemplate='<b>%{label}</b><br>Victorias: %{value}<br>%{percent}<extra>' + nombre + '</extra>',
-                hole=0.4,
-                textfont=dict(size=11),
-                insidetextorientation='radial',
-            ),
-            row=1, col=col_idx
-        )
-
-    fig.update_layout(
-        title=dict(
-            text='Distribución de Finalizaciones',
-            x=0, font=dict(size=14, color='gray'),
-        ),
-        showlegend=True,
-        legend=dict(orientation='h', yanchor='bottom', y=-0.1, xanchor='center', x=0.5),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        height=375,
-        margin=dict(t=80, b=60, l=40, r=40),
-    )
-    return fig
-
-def generar_donas_derrotas(lista_peleadores, df_ufc):
-    """
-    Genera un subplot horizontal con gráficos de dona sobre cómo perdieron sus peleas.
-    """
-    color_map = {
-        'KO/TKO' : '#D85A30', 'SUB'   : '#378ADD', 'DEC'   : '#1D9E75',
-        'S-DEC'   : '#9B59B6', 'M-DEC' : '#F39C12', 'U-DEC' : '#1D9E75',
-        'CNC'     : '#888780', 'DQ'    : '#888780',
-    }
-
-    fig = make_subplots(rows=1, cols=2, specs=[[{'type': 'pie'}, {'type': 'pie'}]], subplot_titles=lista_peleadores)
-
-    for i, nombre in enumerate(lista_peleadores):
-        col_idx = i + 1
-        mask = (df_ufc['R_fighter'] == nombre) | (df_ufc['B_fighter'] == nombre)
-        peleas = df_ufc[mask][['finish', 'Winner', 'R_fighter', 'B_fighter']].copy()
-        
-        peleas_perdidas = peleas[
-            ((peleas['Winner'] == 'Blue') & (peleas['R_fighter'] == nombre)) |
-            ((peleas['Winner'] == 'Red')  & (peleas['B_fighter'] == nombre))
-        ]
-        
-        derrotas = peleas_perdidas['finish'].value_counts()
-        
-        if derrotas.empty:
-            fig.add_trace(
-                go.Pie(
-                    labels=['Sin derrotas'],values=[1],name=nombre,
-                    marker=dict(colors=['#1D9E75'], line=dict(color='rgba(0,0,0,0.2)', width=1)),
-                    textinfo='label', hovertemplate=f'<b>{nombre}</b> no tiene derrotas registradas<extra></extra>',
-                    hole=0.4, textfont=dict(size=11),
-                ),
-                row=1, col=col_idx
-            )
-        else:
-            labels = derrotas.index.tolist()
-            values = derrotas.values.tolist()
-            colors = [color_map.get(l, '#888780') for l in labels]
-            
-            fig.add_trace(
-                go.Pie(
-                    labels=labels, values=values, name=nombre,
-                    marker=dict(colors=colors, line=dict(color='rgba(0,0,0,0.2)', width=1)),
-                    textinfo='label+percent', hovertemplate='<b>%{label}</b><br>Derrotas: %{value}<br>%{percent}<extra>' + nombre + '</extra>',
-                    hole=0.4, textfont=dict(size=11), insidetextorientation='radial',
-                ),
-                row=1, col=col_idx
-            )
-
-    fig.update_layout(
-        title=dict(text='Distribución de Derrotas', x=0, font=dict(size=14, color='gray')),
-        showlegend=True, legend=dict(orientation='h', yanchor='bottom', y=-0.1, xanchor='center', x=0.5),
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=375, margin=dict(t=80, b=60, l=40, r=40),
-    )
-    return fig
-
-def generar_chart_roi(lista_peleadores, df_ufc, tipo_odds, inversion=100):
-    """
-    Genera un gráfico Scatter que simula el retorno de inversión según el mercado seleccionado.
-    """
-    odds_config = {
-        'odds'    : {'col_r': 'R_odds',     'col_b': 'B_odds',     'label': 'Odds generales'},
-        'dec_odds': {'col_r': 'r_dec_odds', 'col_b': 'b_dec_odds', 'label': 'Odds decisión'},
-        'sub_odds': {'col_r': 'r_sub_odds', 'col_b': 'b_sub_odds', 'label': 'Odds sumisión'},
-        'ko_odds' : {'col_r': 'r_ko_odds',  'col_b': 'b_ko_odds',  'label': 'Odds KO/TKO'},
-    }
-
-    col_r = odds_config[tipo_odds]['col_r']
-    col_b = odds_config[tipo_odds]['col_b']
-    label = odds_config[tipo_odds]['label']
-
-    colores_peleador = {
-        lista_peleadores[0]: '#378ADD',
-        lista_peleadores[1]: '#D85A30',
-    }
-
-    symbol_map = {'Victoria': 'circle', 'Derrota': 'x', 'Empate': 'diamond'}
-    size_map   = {'Victoria': 10, 'Derrota': 13, 'Empate': 10}
-    orden_tipo = ['Gran favorito', 'Favorito', "Pick'em", 'Underdog', 'Gran underdog']
-
-    dfs = []
-    for p in lista_peleadores:
-        df_h = get_historial_apuestas(p, df_ufc, inversion, col_r, col_b)
-        if not df_h.empty:
-            dfs.append(df_h)
-            
-    if not dfs:
-        return go.Figure()
-
-    df_todos = pd.concat(dfs, ignore_index=True).dropna(subset=['retorno', 'tipo'])
-    df_todos['tipo'] = pd.Categorical(df_todos['tipo'], categories=orden_tipo, ordered=True)
-
-    fig = go.Figure()
-
-    for resultado in ['Victoria', 'Empate', 'Derrota']:
-        for nombre in lista_peleadores:
-            grupo = df_todos[(df_todos['peleador'] == nombre) & (df_todos['resultado'] == resultado)]
-            if grupo.empty:
-                continue
-
-            fig.add_trace(go.Scatter(
-                x=grupo['retorno'],
-                y=grupo['tipo'],
-                mode='markers',
-                name=nombre if resultado == 'Victoria' else None,
-                legendgroup=nombre,
-                showlegend=resultado == 'Victoria',
-                marker=dict(
-                    color=colores_peleador.get(nombre, '#888780'),
-                    symbol=symbol_map[resultado],
-                    size=size_map[resultado],
-                    opacity=0.85,
-                    line=dict(width=1.5, color='rgba(0,0,0,0.2)'),
-                ),
-                customdata=grupo[['oponente', 'fecha', 'finish', 'resultado', 'odds', 'n_pelea']].values,
-                hovertemplate=(
-                    f'<b>{nombre}</b> vs %{{customdata[0]}}<br>'
-                    'Fecha         : %{customdata[1]}<br>'
-                    'Resultado     : <b>%{customdata[3]}</b><br>'
-                    'Finalización  : %{customdata[2]}<br>'
-                    f'Odds ({label}): %{{customdata[4]}}<br>'
-                    'Retorno neto  : $%{x:.2f}<br>'
-                    'Pelea #%{customdata[5]}'
-                    '<extra></extra>'
-                ),
-            ))
-
-    fig.add_vline(x=0, line_dash='dash', line_color='rgba(128,128,128,0.5)', line_width=1.5,
-                  annotation_text='Break-even', annotation_position='top', annotation_font=dict(size=9, color='gray'))
-    fig.add_vline(x=-inversion, line_dash='dot', line_color='rgba(216,90,48,0.4)', line_width=1,
-                  annotation_text=f'-${inversion}', annotation_position='bottom', annotation_font=dict(size=9, color='#D85A30'))
-
-    for sym, lbl in [('circle','Victoria'), ('x','Derrota'), ('diamond','Empate')]:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(symbol=sym, size=9, color='gray'),
-                                 name=lbl, showlegend=True, legendgroup='shapes'))
-
-    fig.update_layout(
-        title=dict(text=f'Historial de Retorno de Inversion Historico simulado — {label}<br><sup>Inversión constante de ${inversion} por combate</sup>', x=0, font=dict(size=14, color='gray')),
-        xaxis=dict(title='Retorno neto (USD)', gridcolor='rgba(128,128,128,0.15)', zeroline=False, tickprefix='$'),
-        yaxis=dict(title='Condición inicial de la cuota', gridcolor='rgba(128,128,128,0.15)', categoryorder='array', categoryarray=orden_tipo),
-        legend=dict(orientation='h', yanchor='top', y=10, xanchor='center', x=1, font=dict(size=10)),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        height=450,
-        margin=dict(t=80, b=80, l=120, r=40),
-    )
-    return fig
-
-def generar_scatter_rendimiento(lista_peleadores, df_ufc, metrica):
-    """
-    Genera un scatter plot para analizar una métrica física a lo largo del tiempo de pelea.
-    """
-    metrica_config = {
-        'sig_str' : {'col': 'sig_str',   'label': 'Sig. Strikes por minuto'},
-        'td_landed'  : {'col': 'td_landed',    'label': 'Takedowns lanzados'},
-        'sig_str_pct': {'col': 'sig_str_pct',  'label': 'Precisión de strikes %'},
-        'sub_att'    : {'col': 'sub_att',      'label': 'Intentos de sumisión'},
-    }
-
-    col_x    = metrica_config[metrica]['col']
-    label_x  = metrica_config[metrica]['label']
-
-    colores_peleador = {
-        lista_peleadores[0]: '#378ADD',
-        lista_peleadores[1]: '#D85A30',
-    }
-
-    symbol_map = {'Victoria': 'circle', 'Derrota': 'x', 'Empate': 'diamond'}
-    size_map   = {'Victoria': 10, 'Derrota': 13, 'Empate': 10}
-
-    dfs = []
-    for p in lista_peleadores:
-        df_h = get_historial_scatter(p, df_ufc)
-        if not df_h.empty:
-            dfs.append(df_h)
-            
-    if not dfs:
-        return go.Figure()
-
-    df_todos = pd.concat(dfs, ignore_index=True).dropna(subset=[col_x, 'dur_min'])
-    
-    fig = go.Figure()
-    orden_resultado = ['Victoria', 'Empate', 'Derrota']
-
-    for resultado in orden_resultado:
-        for nombre in lista_peleadores:
-            grupo = df_todos[(df_todos['peleador'] == nombre) & (df_todos['resultado'] == resultado)]
-            if grupo.empty:
-                continue
-
-            color = colores_peleador.get(nombre, '#888780')
-
-            fig.add_trace(go.Scatter(
-                x    = grupo['dur_min'],
-                y    = grupo[col_x],
-                mode = 'markers',
-                name            = nombre if resultado == 'Victoria' else None,
-                legendgroup     = nombre,
-                showlegend      = resultado == 'Victoria',
-                marker = dict(
-                    color   = color,
-                    symbol  = symbol_map[resultado],
-                    size    = size_map[resultado],
-                    opacity = 0.85,
-                    line    = dict(width = 1.5, color = 'rgba(0,0,0,0.25)'),
-                ),
-                customdata    = grupo[['oponente', 'fecha', 'finish', 'resultado', 'n_pelea']].values,
-                hovertemplate = (
-                    f'<b>{nombre}</b> vs %{{customdata[0]}}<br>'
-                    'Fecha       : %{customdata[1]}<br>'
-                    'Resultado   : <b>%{customdata[3]}</b><br>'
-                    'Finalización: %{customdata[2]}<br>'
-                    f'{label_x}: %{{y:.2f}}<br>'
-                    'Duración    : %{x:.1f} min<br>'
-                    'Pelea #%{customdata[4]}'
-                    '<extra></extra>'
-                ),
-            ))
-
-    for r in range(1, 6):
-        fig.add_vline(x=r * 5, line_dash='dot', line_color='rgba(128,128,128,0.25)', line_width=1,
-                      annotation_text=f'R{r}', annotation_position='top', annotation_font=dict(size=9, color='gray'))
-
-    avg = df_todos[col_x].mean()
-    fig.add_hline(y=avg, line_dash='dash', line_color='rgba(128,128,128,0.4)', line_width=1,
-                  annotation_text=f'Promedio actual: {avg:.2f}', annotation_position='right', annotation_font=dict(size=9, color='gray'))
-
-    for sym, lbl in [('circle','Victoria'), ('x','Derrota'), ('diamond','Empate')]:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(symbol=sym, size=9, color='gray'),
-                                 name=lbl, showlegend=True, legendgroup='shapes'))
-
-    fig.update_layout(
-        title=dict(text=f'Evolución de Rendimiento Histórico<br><sup>X = Duración del combate · Y = {label_x}</sup>', x=0, font=dict(size=14, color='gray')),
-        xaxis=dict(title='Duración acumulada (minutos)', gridcolor='rgba(128,128,128,0.15)', zeroline=False, range=[0,27]),
-        yaxis=dict(title=label_x, gridcolor='rgba(128,128,128,0.15)', zeroline=False),
-        legend=dict(orientation='h', yanchor='top', y=10, xanchor='center', x=1, font=dict(size=10)),
-        paper_bgcolor = 'rgba(0,0,0,0)',
-        plot_bgcolor  = 'rgba(0,0,0,0)',
-        height=480,
-        margin=dict(t=80, b=80, l=60, r=40),
-    )
-    return fig
-
-def generar_chart_distribucion_tiempo(lista_peleadores, df_ufc):
-    """
-    Crea un gráfico de distribución acumulada/densidad para comparar la 
-    duración de las peleas de ambos peleadores.
-    """
-    colores_peleador = {
-        lista_peleadores[0]: '#378ADD',
-        lista_peleadores[1]: '#D85A30',
-    }
-    
-    fig = go.Figure()
-    
-    for nombre in lista_peleadores:
-        df_tiempos = get_historial_tiempos(nombre, df_ufc)
-        if df_tiempos.empty:
-            continue
-            
-        color = colores_peleador.get(nombre, '#888780')
-        
-        fig.add_trace(go.Histogram(
-            x=df_tiempos['dur_min'],
-            name=nombre,
-            histnorm='probability density',
-            nbinsx=15,
-            marker_color=color,
-            opacity=0.45,
-            autobinx=False,
-            xbins=dict(start=0, end=25, size=2.5),
-        ))
-        
-        promedio = df_tiempos['dur_min'].mean()
-        fig.add_vline(
-            x=promedio,
-            line_dash='dash',
-            line_color=color,
-            line_width=2,
-            annotation_text=f"Prom. {nombre.split()[-1]}: {promedio:.1f} min",
-            annotation_position="top right",
-            annotation_font=dict(size=9, color=color)
-        )
-
-    for r in range(1, 6):
-        fig.add_vline(x=r * 5, line_dash='dot', line_color='rgba(128,128,128,0.25)', line_width=1,
-                      annotation_text=f'R{r}', annotation_position='top', annotation_font=dict(size=9, color='gray'))
-
-    fig.update_layout(
-        title=dict(
-            text='Distribución del Tiempo de Pelea<br>',
-            x=0, font=dict(size=14, color='gray')
-        ),
-        xaxis=dict(
-            title='Duración de la Pelea (Minutos)',
-            gridcolor='rgba(128,128,128,0.15)',
-            range=[0, 27],
-            dtick=5
-        ),
-        yaxis=dict(
-            title='Densidad de Frecuencia',
-            gridcolor='rgba(128,128,128,0.15)',
-            showticklabels=False 
-        ),
-        barmode='overlay', 
-        legend=dict(orientation='h', yanchor='top', y=10, xanchor='center', x=1),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        height=420,
-        margin=dict(t=80, b=60, l=40, r=40),
-    )
-    return fig
-
-def generar_chart_record_barras(lista_peleadores, df_peleador_perfil):
-    """
-    Genera un gráfico de barras horizontales independientes donde cada barra
-    lleva escrito su propio tipo de resultado (Victoria/Derrota/Empate) y se oculta la leyenda.
-    """
-    df_resumen = df_peleador_perfil[df_peleador_perfil['fighter'].isin(lista_peleadores)].copy()
-    
-    categorias = {
-        'wins': {'label': 'Victoria', 'color': '#1D9E75'},
-        'losses': {'label': 'Derrota', 'color': '#D85A30'},
-        'draws': {'label': 'Empate', 'color': '#888780'}
-    }
-    
-    fig = go.Figure()
-    
-    for col, info in categorias.items():
-        valores = df_resumen[col].fillna(0).tolist() if col in df_resumen.columns else len(df_resumen)
-        nombres = df_resumen['fighter'].tolist() if 'fighter' in df_resumen.columns else lista_peleadores
-        
-        textos_barras = [f"{info['label']}: {int(val)}" for val in valores]
-        
-        fig.add_trace(go.Bar(
-            y=nombres,  
-            x=valores,  
-            orientation='h',  
-            marker_color=info['color'],
-            text=textos_barras,
-            textposition='auto',       
-            textfont=dict(weight='bold'),
-            showlegend=False,
-            hovertemplate=f'<b>%{{y}}</b><br>{info["label"]}: %{{x}}<extra></extra>'
-        ))
-
-    fig.update_layout(
-        title=dict(
-            text='Récord Histórico (UFC)',
-            x=0, font=dict(size=14, color='gray')
-        ),
-        xaxis=dict(
-            gridcolor='rgba(128,128,128,0.15)',
-            zeroline=False
-        ),
-        yaxis=dict(
-            gridcolor='rgba(128,128,128,0.11)',
-            #autorange="reversed"
-        ),
-        barmode='group', 
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        height=320,
-        margin=dict(t=60, b=40, l=140, r=60),
-    )
-    return fig
-
-def generar_boxplot_tiempo_divisiones(df_ufc):
-    """
-    Genera un gráfico de cajas (Box Plot) para comparar la distribución de la
-    duración de las peleas entre todas las divisiones de peso de la UFC.
-    """
-    if 'total_fight_time_secs' not in df_ufc.columns or 'weight_class' not in df_ufc.columns:
-        return go.Figure()
-        
-    df_clean = df_ufc.dropna(subset=['total_fight_time_secs', 'weight_class']).copy()
-    df_clean['dur_min'] = df_clean['total_fight_time_secs'] / 60
-
-    conteos = df_clean['weight_class'].value_counts()
-    divisiones_validas = conteos[conteos > 15].index
-    df_clean = df_clean[df_clean['weight_class'].isin(divisiones_validas)]
-
-    orden_divisiones = df_clean.groupby('weight_class')['dur_min'].median().sort_values().index
-
-    fig = go.Figure()
-
-    for division in orden_divisiones:
-        df_div = df_clean[df_clean['weight_class'] == division]
-        
-        fig.add_trace(go.Box(
-            y=df_div['dur_min'],
-            name=division,
-            boxpoints='outliers', 
-            marker=dict(size=3, opacity=0.5),
-            line=dict(width=1.5),
-            notched=False
-        ))
-
-    for r in [0, 27]:
-        fig.add_hline(
-            y=r * 5, line_dash='dash', line_color='rgba(128,128,128,0.3)', line_width=1,
-            annotation_text=f'Fin R{r}' if r==1 else f'Decisión (3R)' if r==3 else f'Decisión (5R)',
-            annotation_position='right', annotation_font=dict(size=8, color='gray')
-        )
-
-    fig.update_layout(
-        title=dict(
-            text='Distribución y Tendencia del Tiempo de Pelea por División de Peso<br><sup>Las divisiones están ordenadas de menor a mayor duración promedio de combate</sup>',
-            x=0, font=dict(size=14, color='gray')
-        ),
-        xaxis=dict(
-            title='Divisiones de Peso',
-            tickangle=45,
-            gridcolor='rgba(128,128,128,0.1)'
-        ),
-        yaxis=dict(
-            title='Duración del Combate (Minutos)',
-            gridcolor='rgba(128,128,128,0.1)',
-            range=[0,27],
-            dtick=5,
-            zeroline=False
-        ),
-        showlegend=False,
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        height=520,
-        margin=dict(t=80, b=100, l=60, r=80),
-    )
-    return fig
-
-def generar_heatmap_correlaciones(df_ufc, tipo_odds, label_odds):
-    """
-    Calcula la correlación de Pearson y aísla EXCLUSIVAMENTE el cruce de los atributos
-    físicos/rendimiento contra el tipo de apuesta especificado al comenzar.
-    Muestra una sola columna limpia (Rectangular) donde VERDE = Favoritismo.
-    """
-    columna_odds_real = None
-    posibles_odds_cols = [tipo_odds, f"R_{tipo_odds}", f"B_{tipo_odds}", f"avg_{tipo_odds}", f"R_{tipo_odds.lower()}", f"B_{tipo_odds.lower()}"]
-    
-    for col in posibles_odds_cols:
-        if col in df_ufc.columns:
-            columna_odds_real = col
-            break
-            
-    if not columna_odds_real:
-        return go.Figure()
-
-    atributos = {
-        'dec_odds': 'Odds Decisión',
-        'sub_odds': 'Odds Sumisión',
-        'ko_odds': 'Odds KO/TKO',
-        'avg_SIG_STR_landed': 'Strikes Conectados',
-        'avg_SIG_STR_pct': 'Precisión Strikes',
-        'avg_TD_landed': 'Takedowns Conectados',
-        'avg_TD_pct': 'Precisión Takedowns',
-        'avg_SUB_ATT': 'Intentos Sumisión',
-        'avg_REV': 'Reversiones',
-        'avg_PASS': 'Pases de Guardia',
-        'total_fight_time_secs': 'Tiempo de Pelea',
-        'current_win_streak': 'Racha de Peleas Ganadas',
-        'current_loss_streak': 'Racha de Peleas Perdidas',
-        'Pound-for-Pound_rank': 'Rango Libra por Libra',
-        'age': 'Edad',
-        'Height_cms': 'Altura',
-        'Weight_lbs': 'Peso',
-        'Reach_cms': 'Alcance'
-    }
-
-    columnas_disponibles = [columna_odds_real]
-    labels_atributos_finales = []
-
-    for col_base, label_base in atributos.items():
-        if col_base == tipo_odds:
-            continue
-            
-        if col_base == 'total_fight_time_secs':
-            if col_base in df_ufc.columns:
-                columnas_disponibles.append(col_base)
-                labels_atributos_finales.append('Tiempo de Pelea (min)')
-        else:
-            posibles_cols = [col_base, f'R_{col_base}', f'B_{col_base}', f'R_{col_base.lower()}', f'B_{col_base.lower()}']
-            for col in posibles_cols:
-                if col in df_ufc.columns and col not in columnas_disponibles:
-                    columnas_disponibles.append(col)
-                    labels_atributos_finales.append(label_base)
-                    break
-
-    df_heat = df_ufc[columnas_disponibles].dropna()
-    if df_heat.empty or len(columnas_disponibles) < 2:
-        return go.Figure()
-
-    if 'total_fight_time_secs' in df_heat.columns:
-        df_heat['total_fight_time_secs'] = df_heat['total_fight_time_secs'] / 60
-
-    matriz_completa = df_heat.corr().round(2)
-    
-    todos_los_labels = [label_odds] + labels_atributos_finales
-    matriz_completa.index = todos_los_labels
-    matriz_completa.columns = todos_los_labels
-
-    matriz_exclusiva = matriz_completa.loc[labels_atributos_finales, [label_odds]].copy()
-
-    matriz_exclusiva[label_odds] = matriz_exclusiva[label_odds] * -1
-
-    fig2 = go.Figure(go.Heatmap(
-        z             = matriz_exclusiva.values,
-        x             = matriz_exclusiva.columns.tolist(),
-        y             = matriz_exclusiva.index.tolist(),
-        colorscale    = [[0.0, '#D85A30'], [0.5, '#F1EFE8'], [1.0, '#1D9E75']], 
-        zmid          = 0,
-        zmin          = -1,
-        zmax          = 1,
-        text          = matriz_exclusiva.values.round(2),
-        texttemplate  = '%{text}',
-        textfont      = dict(size=11, weight='bold'),
-        hovertemplate = 'Atributo: <b>%{y}</b><br>Impacto en ' + label_odds + ': <b>%{z:.2f}</b><extra></extra>',
-        colorbar      = dict(
-            title      = 'Impacto de<br>Favoritismo',
-            tickvals   = [-1, -0.5, 0, 0.5, 1],
-            ticktext   = ['Underdog (-1)', '-0.5', 'Neutro (0)', '0.5', 'Favorito (1)'],
-            thickness  = 14,
-        ),
-    ))
-
-    fig2.update_layout(
-        title=dict(
-            text=f'Análisis de Influencia Directa sobre: {label_odds}<br><sup><b>VERDE</b> = Atributos que te hacen favorito en este mercado · <b>NARANJA</b> = Atributos que aumentan el pago (Underdog)</sup>',
-            x=0, font=dict(size=13, color='gray'),
-        ),
-        paper_bgcolor = 'rgba(0,0,0,0)',
-        plot_bgcolor  = 'rgba(0,0,0,0)',
-        height        = 580,
-        margin        = dict(t=80, b=40, l=180, r=40),
-        xaxis         = dict(tickfont=dict(size=11, weight='bold'), zeroline=False, side='top'), # La apuesta queda fija arriba
-        yaxis         = dict(tickfont=dict(size=11), zeroline=False),
-    )
-    return fig2
-
-def generar_chart_finalizaciones_divisiones(df_ufc):
-    """
-    Genera un gráfico de barras verticales apiladas al 100% buscando dinámicamente
-    las divisiones de peso y mapeando la columna 'finish' para el método de victoria.
-    """
-    col_weight = None
-    posibles_weight = ['weight_class', 'WeightClass', 'weightclass', 'division', 'w_class', 'WEIGHT_CLASS']
-    for col in posibles_weight:
-        if col in df_ufc.columns:
-            col_weight = col
-            break
-            
-    col_method = None
-    posibles_method = ['finish', 'method', 'Method', 'win_by', 'FINISH']
-    for col in posibles_method:
-        if col in df_ufc.columns:
-            col_method = col
-            break
-
-    if not col_weight or not col_method:
-        return go.Figure()
-
-    df_clean = df_ufc.dropna(subset=[col_weight, col_method]).copy()
-
-    def clasificar_metodo(m):
-        m = str(m).upper()
-        if 'KO' in m or 'TKO' in m: 
-            return 'ko'
-        elif 'SUB' in m or 'SUM' in m or 'TAP' in m: 
-            return 'sub'
-        elif 'DEC' in m or 'JUDG' in m or 'PTS' in m: 
-            return 'dec'
-        return 'otros'
-
-    df_clean['metodo_cat'] = df_clean[col_method].apply(clasificar_metodo)
-
-    conteos_div = df_clean[col_weight].value_counts()
-    div_validas = conteos_div[conteos_div > 15].index
-    df_clean = df_clean[df_clean[col_weight].isin(div_validas)]
-
-    df_counts = df_clean.groupby([col_weight, 'metodo_cat']).size().unstack(fill_value=0)
-    
-    for c in ['ko', 'sub', 'dec']:
-        if c not in df_counts.columns:
-            df_counts[c] = 0
-            
-    totales = df_counts.sum(axis=1)
-    
-    div_stats = pd.DataFrame()
-    div_stats['ko_pct']  = df_counts['ko'] / totales
-    div_stats['sub_pct'] = df_counts['sub'] / totales
-    div_stats['dec_pct'] = df_counts['dec'] / totales
-    
-    div_stats = div_stats.sort_values(by='ko_pct', ascending=False)
-    xtick_labels = div_stats.index.tolist()
-
-    fig = go.Figure()
-
-    bloques = [
-        {'col': 'ko_pct',  'name': 'KO/TKO',  'color': '#378ADD'},
-        {'col': 'sub_pct', 'name': 'Sumisión', 'color': '#1D9E75'},
-        {'col': 'dec_pct', 'name': 'Decisión', 'color': '#888780'}
-    ]
-
-    for b in bloques:
-        textos_barra = [
-            f"{val:.0%}" if val > 0.05 else "" 
-            for val in div_stats[b['col']]
-        ]
-
-        fig.add_trace(go.Bar(
-            x             = xtick_labels,
-            y             = div_stats[b['col']],
-            name          = b['name'],
-            marker_color  = b['color'],
-            text          = textos_barra,
-            textposition  = 'inside',         
-            textfont      = dict(size=10, color='white', weight='bold'),
-            insidetextanchor = 'middle',
-            hovertemplate = 'División: <b>%{x}</b><br>' + b['name'] + ': <b>%{y:.1%}</b><extra></extra>'
-        ))
-
-    fig.update_layout(
-        title=dict(
-            text='Manera de finalización por división de peso',
-            x=0, font=dict(size=14, color='gray')
-        ),
-        barmode          = 'stack', 
-        paper_bgcolor    = 'rgba(0,0,0,0)',
-        plot_bgcolor     = 'rgba(0,0,0,0)',
-        height           = 520,
-        margin           = dict(t=80, b=120, l=60, r=40),
-        legend           = dict(orientation='h', yanchor='bottom', y=-0.25, xanchor='center', x=0.5),
-        
-        yaxis=dict(
-            title      = '% de peleas',
-            tickformat = '.0%',
-            autorange  = True,             
-            zeroline   = False,
-            gridcolor  = 'rgba(128,128,128,0.1)'
-        ),
-        xaxis=dict(
-            tickangle = -20,
-            tickfont  = dict(size=10),
-            zeroline  = False
-        )
-    )
-
-    return fig
-
-def generar_analisis_pca(df_ufc):
-    """
-    Realiza un Análisis de Componentes Principales (PCA) sobre las características 
-    de rendimiento de los peleadores para reducir la dimensionalidad y encontrar patrones.
-    """
-    columnas_base = [
-        'avg_SIG_STR_landed', 'avg_SIG_STR_pct', 
-        'avg_TD_landed', 'avg_TD_pct', 
-        'avg_SUB_ATT', 'avg_REV', 'avg_PASS',
-        'age', 'Height_cms', 'Reach_cms', 'Weight_lbs','odds', 
-        'current_win_streak', 'current_lose_streak',
-        #'win_by_KO/TKO', 'win_by_Submission', 'wins',
-        #'win_by_Decision_Majority', 'win_by_Decision_Split', 'win_by_Decision_Unanimous',
-    ]
-    
-    columnas_analisis = []
-    mapeo_labels = {}
-    
-    for col in columnas_base:
-        for posible in [col, f'R_{col}', f'B_{col}']:
-            if posible in df_ufc.columns:
-                columnas_analisis.append(posible)
-                mapeo_labels[posible] = col.replace('avg_', '').replace('_cms', '')
-                break
-
-    if len(columnas_analisis) < 3:
-        return None, None
-
-    df_pca_input = df_ufc[columnas_analisis].dropna().copy()
-    
-    if len(df_pca_input) < 10:
-        return None, None
-
+df_peleadores_consolidado = pd.merge(df_peleador_acciones, df_peleador_perfil, on='fighter', how='inner')
+df_peleadores_consolidado = pd.merge(df_peleadores_consolidado, fighters_info, on='fighter', how='inner')
+
+columnas_modelo = [
+    'avg_SIG_STR_landed', 'avg_SIG_STR_pct', 'avg_SUB_ATT',
+    'avg_TD_landed', 'avg_TD_pct', 'Height_cms', 'Reach_cms', 'age',
+    'win_by_KO_TKO', 'win_by_Submission'
+]
+
+labels_metricas = {
+    'avg_SIG_STR_landed': 'Golpes Conectados', 'avg_SIG_STR_pct': 'Precisión Golpeo',
+    'avg_SUB_ATT': 'Intentos Sumisión', 'avg_TD_landed': 'Derribos Conectados',
+    'avg_TD_pct': 'Precisión Derribo', 'Height_cms': 'Altura',
+    'Reach_cms': 'Alcance', 'age': 'Edad',
+    'win_by_KO_TKO': 'Victorias KO/TKO', 'win_by_Submission': 'Victorias Sumisión'
+}
+
+df_clean = df_peleadores_consolidado.dropna(subset=columnas_modelo).copy()
+
+@st.cache_data(show_spinner=False)
+def calcular_proyecciones(df_para_modelo: pd.DataFrame, columnas_modelo: list, umap_disponible: bool):
     scaler = StandardScaler()
-    datos_escalados = scaler.fit_transform(df_pca_input)
+    datos_escalados = scaler.fit_transform(df_para_modelo[columnas_modelo])
 
-    n_components = min(3, datos_escalados.shape[1])
-    pca = PCA(n_components=n_components)
-    componentes_principales = pca.fit_transform(datos_escalados)
+    pca = PCA(n_components=2)
+    comp_pca = pca.fit_transform(datos_escalados)
 
-    df_resultado = pd.DataFrame(
-        data = componentes_principales, 
-        columns = [f'PC{i+1}' for i in range(n_components)]
-    )
+    tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(df_para_modelo) - 1))
+    comp_tsne = tsne.fit_transform(datos_escalados)
 
-    varianza_exp = pca.explained_variance_ratio_
-    varianza_acum = varianza_exp.cumsum()
+    resultado = {'escalados': datos_escalados, 'pca': comp_pca, 'tsne': comp_tsne, 'umap': None}
+    if umap_disponible:
+        reducer = umap.UMAP(n_components=2, random_state=42)
+        resultado['umap'] = reducer.fit_transform(datos_escalados)
+    return resultado
 
-    fig_varianza = go.Figure()
-    fig_varianza.add_trace(go.Bar(
-        x=[f'PC{i+1}' for i in range(n_components)], y=varianza_exp,
-        name='Varianza Individual', marker_color='#378ADD', text=[f'{v:.1%}' for v in varianza_exp], textposition='auto'
-    ))
-    fig_varianza.add_trace(go.Scatter(
-        x=[f'PC{i+1}' for i in range(n_components)], y=varianza_acum,
-        name='Varianza Acumulada', line=dict(color='#D85A30', width=3), mode='lines+markers'
-    ))
-    fig_varianza.update_layout(
-        title='Codo de Varianza Explicada por Componente',
-        xaxis_title='Componentes Principales', yaxis_title='% Varianza Explicada',
-        yaxis=dict(tickformat='.0%'), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        height=350, margin=dict(t=50, b=40, l=50, r=20), legend=dict(orientation='h', y=-0.2)
-    )
+@st.cache_data(show_spinner=False)
+def calcular_clusters(coordenadas: np.ndarray, k: int):
+    kmeans_modelo = KMeans(n_clusters=k, random_state=42, n_init=10)
+    return kmeans_modelo.fit_predict(coordenadas)
 
-    cargas = pca.components_
-    fig_biplot = go.Figure()
+if len(df_clean) > 10:
+    proyecciones = calcular_proyecciones(df_clean, columnas_modelo, UMAP_DISPONIBLE)
+    datos_escalados = proyecciones['escalados']
+    df_clean['PCA_1'], df_clean['PCA_2'] = proyecciones['pca'][:, 0], proyecciones['pca'][:, 1]
+    df_clean['TSNE_1'], df_clean['TSNE_2'] = proyecciones['tsne'][:, 0], proyecciones['tsne'][:, 1]
 
-    for i, col in enumerate(columnas_analisis):
-        fig_biplot.add_trace(go.Scatter(
-            x=[0, cargas[0, i]], y=[0, cargas[1, i]],
-            mode='lines+markers+text',
-            name=mapeo_labels[col],
-            text=["", mapeo_labels[col]],
-            textposition="top center",
-            marker=dict(size=6),
-            line=dict(width=2.5),
-            hovertemplate=f'<b>{mapeo_labels[col]}</b><br>Peso PC1: {cargas[0, i]:.2f}<br>Peso PC2: {cargas[1, i]:.2f}<extra></extra>'
-        ))
+    if UMAP_DISPONIBLE and proyecciones['umap'] is not None:
+        df_clean['UMAP_1'], df_clean['UMAP_2'] = proyecciones['umap'][:, 0], proyecciones['umap'][:, 1]
 
-    fig_biplot.update_layout(
-        title='Mapa de Impacto: ¿Qué mide realmente cada Componente Principal? (PC1 x PC2)',
-        xaxis=dict(title='Componente Principal 1 (PC1)', zeroline=True, zerolinewidth=1.5, zerolinecolor='gray'),
-        yaxis=dict(title='Componente Principal 2 (PC2)', zeroline=True, zerolinewidth=1.5, zerolinecolor='gray'),
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        height=500, margin=dict(t=60, b=40, l=50, r=40)
-    )
+    with st.sidebar:
+        st.header("🎛️ Configuración")
+        espacio_proyeccion = st.selectbox("K-Means sobre:", options=["PCA", "t-SNE", "UMAP"] if UMAP_DISPONIBLE else ["PCA", "t-SNE"])
+        k_clusters = st.slider("Arquetipos (K):", min_value=2, max_value=6, value=3)
+        tipo_escala = st.selectbox("Escala:", options=["Datos Originales", "Datos Normalizados"])
+        peleador_buscado = st.selectbox("Localizar peleador:", options=["Selecciona un Peleador"] + sorted(df_clean['fighter'].unique().tolist()))
+        division_sel = st.selectbox("Filtrar por División:", options=["Todas"] + sorted(df_clean['weight_class'].unique().tolist()))
 
-    return fig_varianza, fig_biplot
+    if espacio_proyeccion == "PCA":
+        coordenadas_clustering = df_clean[['PCA_1', 'PCA_2']].values
+    elif espacio_proyeccion == "t-SNE":
+        coordenadas_clustering = df_clean[['TSNE_1', 'TSNE_2']].values
+    elif espacio_proyeccion == "UMAP":
+        coordenadas_clustering = df_clean[['UMAP_1', 'UMAP_2']].values
 
-# 2. Definición del Diálogo
-@st.dialog("Elige el peleador")
-def elegir_peleador_dialog(slot):
-    st.write(f"Configurando **{slot.replace('_', ' ').title()}**")
+    labels_cluster = calcular_clusters(coordenadas_clustering, k_clusters)
+    df_clean['cluster_arquetipo'] = [f"Arquetipo {x + 1}" for x in labels_cluster]
+
+    df_norm = pd.DataFrame(datos_escalados, columns=columnas_modelo)
+    for col in ['fighter', 'weight_class', 'cluster_arquetipo', 'wins', 'losses', 'PCA_1', 'PCA_2', 'TSNE_1', 'TSNE_2', 'win_by_KO_TKO', 'win_by_Submission', 'win_by_Decision']:
+        df_norm[col] = df_clean[col].values
+
+    # Filtrado Dinámico Global
+    df_clean_filtrado = df_clean.copy()
+    df_norm_filtrado = df_norm.copy()
+    if division_sel != "Todas":
+        df_clean_filtrado = df_clean_filtrado[df_clean_filtrado['weight_class'] == division_sel]
+        df_norm_filtrado = df_norm_filtrado[df_norm_filtrado['weight_class'] == division_sel]
+
+    df_base_grafica = df_norm_filtrado.copy() if "Normalizados" in tipo_escala else df_clean_filtrado.copy()
+
+    # Mantener tus colores de arquetipos sin tocar
+    paleta_dinamica = px.colors.qualitative.D3
+    arquetipos_unicos = sorted(df_clean['cluster_arquetipo'].unique().tolist())
+    colores_arquetipo = {arq: paleta_dinamica[i % len(paleta_dinamica)] for i, arq in enumerate(arquetipos_unicos)}
+
+    def generar_mapa_interactivo(dim_x, dim_y, titulo_x, titulo_y, key_identificador):
+        # El identificador dinámico de clave evita que la selección antigua persista tras hacer clic en "Limpiar"
+        key_dinamica = f"{key_identificador}_{st.session_state.limpiar_contador}"
+        fig = go.Figure()
+        fig.add_trace(go.Histogram2dContour(x=df_clean_filtrado[dim_x], y=df_clean_filtrado[dim_y], colorscale='Greys', opacity=0.1, showscale=False, hoverinfo='skip'))
+        for arquetipo in sorted(df_clean_filtrado['cluster_arquetipo'].unique()):
+            df_g = df_clean_filtrado[df_clean_filtrado['cluster_arquetipo'] == arquetipo]
+            if not df_g.empty:
+                fig.add_trace(go.Scatter(
+                    x=df_g[dim_x], y=df_g[dim_y], mode='markers', name=arquetipo, text=df_g['fighter'],
+                    customdata=np.stack((df_g['wins'], df_g['losses']), axis=-1),
+                    marker=dict(size=5.5, color=colores_arquetipo[arquetipo], opacity=0.65, line=dict(width=0.3, color='white')),
+                    hovertemplate="<b>%{text}</b><br>%{customdata[0]}W-%{customdata[1]}L<extra></extra>"
+                ))
+        if peleador_buscado != "Selecciona un Peleador":
+            p_df = df_clean_filtrado[df_clean_filtrado['fighter'] == peleador_buscado]
+            if not p_df.empty:
+                # Detalle en rojo vibrante (#E63946) para el peleador localizado
+                fig.add_trace(go.Scatter(x=p_df[dim_x], y=p_df[dim_y], mode='markers', marker=dict(size=11, color='#E63946', symbol='star'), name=peleador_buscado))
+
+        fig.update_layout(
+            xaxis=dict(title=dict(text=titulo_x, font=dict(size=9, color="white")), tickfont=dict(size=8, color="white")), 
+            yaxis=dict(title=dict(text=titulo_y, font=dict(size=9, color="white")), tickfont=dict(size=8, color="white")),
+            paper_bgcolor='rgba(0,0,0,0)', 
+            plot_bgcolor='rgba(0,0,0,0)', 
+            height=220, 
+            margin=dict(t=5, b=25, l=35, r=5), 
+            showlegend=False
+        )
+        return st.plotly_chart(fig, use_container_width=True, key=key_dinamica, on_select="rerun")
     
-    genero = st.selectbox(
-        "Género del peleador",
-        options=["Male", "Female"],
-        format_func=lambda x: "Hombre" if x == "Male" else "Mujer"
-    )
-    
-    df_filtrado_genero = fighters_info[fighters_info['gender'] == genero]
-    divisiones_disponibles = sorted(df_filtrado_genero['weight_class'].unique())
-    
-    division = st.selectbox(
-        "División / Categoría de peso",
-        options=divisiones_disponibles
-    )
-    
-    df_filtrado_final = df_filtrado_genero[df_filtrado_genero['weight_class'] == division]
-    nombres_disponibles = sorted(df_filtrado_final['fighter'].unique())
-    
-    nombre_seleccionado = st.selectbox(
-        "Selecciona el Peleador",
-        options=nombres_disponibles
-    )
-    
-    if st.button("Confirmar Selección", type="primary", use_container_width=True):
-        st.session_state[slot] = {
-            "nombre": nombre_seleccionado,
-            "division": division,
-            "genero": "Hombre" if genero == "Male" else "Mujer"
-        }
-        st.rerun()
+    # --- RENDERIZADO LAYOUT COMPACTO ---
+    col_izq, col_der = st.columns([1.1, 1.0])
 
-cols_finish = [
-    'R_fighter', 'B_fighter', 'Winner', 'finish', 'finish_details', 'finish_round', 'finish_round_time'
-    ]
-
-@st.dialog("📋 Historial de Combates Detallado", width="large")
-def mostrar_modal_historial(nombre_peleador, df_filtrado):
-    """
-    Función interna que renderiza la tabla dentro de la ventana emergente.
-    """
-    st.markdown(f"### Registros oficiales de **{nombre_peleador}**")
-    
-    if not df_filtrado.empty:
-        if 'date' in df_filtrado.columns:
-            df_filtrado = df_filtrado.sort_values(by='date', ascending=False)
+    with col_izq:
+        tab_pca, tab_tsne, tab_umap = st.tabs(["PCA", "t-SNE", "UMAP"])
+        
+        with tab_pca:
+            ev_pca = generar_mapa_interactivo('PCA_1', 'PCA_2', "PC1", "PC2", "mapa_pca")
+            if ev_pca and "selection" in ev_pca and ev_pca["selection"]["points"]:
+                st.session_state.peleadores_seleccionados = [p["text"] for p in ev_pca["selection"]["points"] if "text" in p]
+        with tab_tsne:
+            ev_tsne = generar_mapa_interactivo('TSNE_1', 'TSNE_2', "t-SNE 1", "t-SNE 2", "mapa_tsne")
+            if ev_tsne and "selection" in ev_tsne and ev_tsne["selection"]["points"]:
+                st.session_state.peleadores_seleccionados = [p["text"] for p in ev_tsne["selection"]["points"] if "text" in p]
+        with tab_umap:
+            if UMAP_DISPONIBLE:
+                ev_umap = generar_mapa_interactivo('UMAP_1', 'UMAP_2', "UMAP 1", "UMAP 2", "mapa_umap")
+                if ev_umap and "selection" in ev_umap and ev_umap["selection"]["points"]:
+                    st.session_state.peleadores_seleccionados = [p["text"] for p in ev_umap["selection"]["points"] if "text" in p]
+        
+        # Coordenadas paralelas optimizadas (Mapeo de colores estricto e intacto)
+        metricas_parcoords = ['avg_SIG_STR_landed', 'avg_SIG_STR_pct', 'avg_SUB_ATT', 'avg_TD_landed', 'avg_TD_pct', 'Height_cms', 'Reach_cms', 'age']
+        if not df_norm_filtrado.empty:
+            df_perfil_arquetipos_z = df_norm_filtrado.groupby('cluster_arquetipo')[metricas_parcoords].mean().reset_index().sort_values('cluster_arquetipo')
             
-        st.dataframe(
-            df_filtrado, 
-            use_container_width=True,
-            hide_index=True 
-        )
-        st.caption(f"Mostrando {len(df_filtrado)} combates encontrados en el histórico de la UFC.")
-    else:
-        st.info(f"No se encontraron registros tabulares detallados para {nombre_peleador}.")
+            # Crear índice numérico para el mapeo discreto de la escala de color
+            mapa_indice_arquetipo = {arq: i for i, arq in enumerate(sorted(df_perfil_arquetipos_z['cluster_arquetipo'].unique()))}
+            df_perfil_arquetipos_z['_indice_color'] = df_perfil_arquetipos_z['cluster_arquetipo'].map(mapa_indice_arquetipo)
+            
+            n_arquetipos_actual = len(mapa_indice_arquetipo)
+            colores_parcoords = [colores_arquetipo[arq] for arq in sorted(mapa_indice_arquetipo, key=mapa_indice_arquetipo.get)]
+            
+            # Escala de colores discreta bien formada para plotly
+            if n_arquetipos_actual > 1:
+                colorscale_parcoords = [[i / (n_arquetipos_actual - 1), c] for i, c in enumerate(colores_parcoords)]
+            else:
+                colorscale_parcoords = [[0, colores_parcoords[0]], [1, colores_parcoords[0]]]
 
-col1, col2 = st.columns(2, width="stretch")
+            fig_parcoords = go.Figure(data=go.Parcoords(
+                line=dict(
+                    color=df_perfil_arquetipos_z['_indice_color'], 
+                    colorscale=colorscale_parcoords, 
+                    showscale=False
+                ),
+                dimensions=[dict(label=labels_metricas.get(col, col), values=df_perfil_arquetipos_z[col]) for col in metricas_parcoords],
+                labelfont=dict(size=9, color='white'), 
+                tickfont=dict(size=8, color='rgba(255,255,255,0.7)')
+            ))
+            # Ajuste de margen superior (t=45) para que los nombres de las variables se vean perfectos
+            fig_parcoords.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=190, margin=dict(t=45, b=15, l=35, r=35))
+            st.plotly_chart(fig_parcoords, use_container_width=True, key="parcoords_arquetipos")
 
-with col1:
-    st.header("Peleador 1")
-    if "peleador_1" not in st.session_state:
-        st.info("Ninguno seleccionado")
-        if st.button("Seleccionar Peleador 1", key="btn_p1"):
-            elegir_peleador_dialog("peleador_1")
-    else:
-        p1 = st.session_state["peleador_1"]
-        st.success(f"**{p1['nombre']}**")
-        st.caption(f"{p1['division']} ({p1['genero']})")
-        if st.button("Cambiar Peleador 1", key="btn_p1_c"):
-            elegir_peleador_dialog("peleador_1")
+    with col_der:
+        st.space(50)
+        col_cuadros, col_radar = st.columns(2)
+        with col_cuadros:
+            if not df_clean_filtrado.empty:
+                df_perfil_arquetipos_orig = df_clean_filtrado.groupby('cluster_arquetipo')[columnas_modelo].mean().reset_index()
+                df_perfil_arquetipos_z = df_norm_filtrado.groupby('cluster_arquetipo')[metricas_parcoords].mean().reset_index()
+                
+                for arquetipo in sorted(df_clean_filtrado['cluster_arquetipo'].unique()):
+                    row_orig = df_perfil_arquetipos_orig[df_perfil_arquetipos_orig['cluster_arquetipo'] == arquetipo]
+                    row_z = df_perfil_arquetipos_z[df_perfil_arquetipos_z['cluster_arquetipo'] == arquetipo]
+                    if not row_z.empty:
+                        color_hex = colores_arquetipo[arquetipo]
+                        rgb = tuple(int(color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                        id_metrica_top = row_z[['avg_SIG_STR_landed', 'avg_SIG_STR_pct', 'avg_SUB_ATT', 'avg_TD_landed', 'avg_TD_pct']].iloc[0].idxmax()
+                        val_top = row_orig[id_metrica_top].iloc[0] * (100 if 'pct' in id_metrica_top and row_orig[id_metrica_top].iloc[0] <= 1.0 else 1)
+                        
+                        st.markdown(f"""
+                            <div style="background-color: rgba({rgb[0]},{rgb[1]},{rgb[2]},0.1); border-left: 3px solid {color_hex}; padding: 3px 8px; border-radius: 4px; margin-bottom: 4px; line-height: 1.1;">
+                                <span style="color:{color_hex}; font-weight:bold; font-size:0.85em;">{arquetipo}</span><br>
+                                <span style="font-size:0.75em; opacity: 0.9; color: #FFFFFF;">★ {labels_metricas.get(id_metrica_top)} ({val_top:.1f}{'%' if 'pct' in id_metrica_top else ''})</span>
+                            </div>
+                        """, unsafe_allow_html=True)
 
-with col2:
-    st.header("Peleador 2")
-    if "peleador_2" not in st.session_state:
-        st.info("Ninguno seleccionado")
-        if st.button("Seleccionar Peleador 2", key="btn_p2"):
-            elegir_peleador_dialog("peleador_2")
-    else:
-        p2 = st.session_state["peleador_2"]
-        st.success(f"**{p2['nombre']}**")
-        st.caption(f"{p2['division']} ({p2['genero']})")
-        if st.button("Cambiar Peleador 2", key="btn_p2_c"):
-            elegir_peleador_dialog("peleador_2")
+        with col_radar:
+            # Radar con dimensiones corregidas para evitar recortes de texto
+            fig_radar = go.Figure()
+            metricas_radar = ['avg_SIG_STR_landed', 'avg_SIG_STR_pct', 'avg_SUB_ATT', 'avg_TD_landed', 'avg_TD_pct']
+            labels_radar = ['Golpes', 'Precisión%', 'Subm.', 'Derribos', 'TD Eff%']
 
-st.divider()
+            if st.session_state.peleadores_seleccionados:
+                for p in st.session_state.peleadores_seleccionados:
+                    df_p_radar = df_base_grafica[df_base_grafica['fighter'] == p]
+                    if not df_p_radar.empty:
+                        val = df_p_radar[metricas_radar].iloc[0].tolist()
+                        if "Originales" in tipo_escala: val = [v*100 if i in [1,4] and v<=1.0 else v for i,v in enumerate(val)]
+                        fig_radar.add_trace(go.Scatterpolar(r=val+[val[0]], theta=labels_radar+[labels_radar[0]], fill='toself', name=p))
+            else:
+                for arquetipo in sorted(df_clean_filtrado['cluster_arquetipo'].unique()):
+                    df_c = df_base_grafica[df_base_grafica['cluster_arquetipo'] == arquetipo]
+                    if not df_c.empty:
+                        val = df_c[metricas_radar].mean().tolist()
+                        if "Originales" in tipo_escala: val = [v*100 if i in [1,4] and v<=1.0 else v for i,v in enumerate(val)]
+                        fig_radar.add_trace(go.Scatterpolar(r=val+[val[0]], theta=labels_radar+[labels_radar[0]], mode='lines', name=arquetipo, line=dict(color=colores_arquetipo[arquetipo], width=1.5)))
 
-if "peleador_1" in st.session_state and "peleador_2" in st.session_state:
-    
-    n1 = st.session_state["peleador_1"]["nombre"]
-    n2 = st.session_state["peleador_2"]["nombre"]
-
-    perf_p1 = df_peleador_perfil[df_peleador_perfil['fighter'] == n1]
-    perf_p2 = df_peleador_perfil[df_peleador_perfil['fighter'] == n2]
-    
-    acc_p1 = df_peleador_acciones.set_index('fighter').loc[n1]
-    acc_p2 = df_peleador_acciones.set_index('fighter').loc[n2]
-
-    mask_tabla_1 = (df_ufc['R_fighter'] == n1) | (df_ufc['B_fighter'] == n1)
-    df_mostrar_1 = df_ufc[mask_tabla_1][cols_finish].copy()
-
-    mask_tabla_2 = (df_ufc['R_fighter'] == n2) | (df_ufc['B_fighter'] == n2)
-    df_mostrar_2 = df_ufc[mask_tabla_2][cols_finish].copy()
-
-    col1, col2, col3 = st.columns([1, 1, 3], width="stretch", border=True)
-
-    with col1:
-        img, info = st.columns([1, 2])
-        with img:
-            #st.image("perfil_vacio.png"#, caption="Foto del peleador"
-            #         )
-            st.write("Imagen referencial del peleador")
-        with info:
-            st.markdown(f"**Nombre**: {n1}")
-            st.markdown(f"**Edad**: {int(perf_p1['age'].values)}")
-            st.markdown(f"**Estatura**: {int(perf_p1['Height_cms'].values)} cm")
-            st.markdown(f"**Peso**: {int(perf_p1['Weight_lbs'].values)} lbs")
-            st.markdown(f"**Alcance**: {int(perf_p1['Reach_cms'].values)} cm")
-
-        fig_radar = generar_radar_chart([n1], df_peleador_acciones)
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-        if st.button(f"Ver historial de {n1}", use_container_width=True, key="btn_h1"):
-            mostrar_modal_historial(n1, df_mostrar_1)
-
-    with col2:
-        img, info = st.columns([1, 2])
-        with img:
-            st.image("perfil_vacio.png"#, caption="Foto del peleador"
-                     )
-        with info:
-            st.markdown(f"**Nombre**: {n2}")
-            st.markdown(f"**Edad**: {int(perf_p2['age'].values)}")
-            st.markdown(f"**Estatura**: {int(perf_p2['Height_cms'].values)} cm")
-            st.markdown(f"**Peso**: {int(perf_p2['Weight_lbs'].values)} lbs")
-            st.markdown(f"**Alcance**: {int(perf_p2['Reach_cms'].values)} cm")
-
-        fig_radar = generar_radar_chart([n2], df_peleador_acciones)
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-        if st.button(f"Ver historial de {n2}", use_container_width=True, key="btn_h2"):
-            mostrar_modal_historial(n2, df_mostrar_2)
-
-    with col3:
-        radar, donas = st.columns(2)
-        with radar:
-            fig_radar = generar_radar_chart([n1, n2], df_peleador_acciones)
-            st.plotly_chart(fig_radar, use_container_width=True)
-
-            fig_record = generar_chart_record_barras([n1, n2], df_peleador_perfil)
-            st.plotly_chart(fig_record, use_container_width=True)
-
-        with donas:
-            fig_donas = generar_donas_finalizaciones([n1, n2], df_ufc)
-            st.plotly_chart(fig_donas, use_container_width=True)
-
-            fig_derrotas = generar_donas_derrotas([n1, n2], df_ufc)
-            st.plotly_chart(fig_derrotas, use_container_width=True)
-
-    tab_rendimiento, tab_ROI ,tab_tiempo = st.tabs([
-            "Rendimiento por Round",
-            "Retorno de Inversión Historico",
-            "Distribución de Tiempo"
-        ])
-
-    with tab_rendimiento:
-        metrica_seleccionada = st.selectbox(
-            "Métrica de rendimiento a evaluar",
-            options=['sig_str', 'td_landed', 'sig_str_pct', 'sub_att'],
-            format_func=lambda x: {
-                'sig_str': 'Strikes Significativos / min',
-                'td_landed': 'Takedowns Conectados',
-                'sig_str_pct': 'Porcentaje de Precisión (%)',
-                'sub_att': 'Intentos de Sumisión'
-            }[x]
-        )
-
-        fig_scatter = generar_scatter_rendimiento([n1, n2], df_ufc, metrica=metrica_seleccionada)
-        st.plotly_chart(fig_scatter, use_container_width=True)
-
-    with tab_ROI:
-        col_opt1, col_opt2 = st.columns(2)
-        with col_opt1:
-            tipo_seleccionado = st.selectbox(
-                "Mercado de cuotas (Odds)",
-                options=['odds', 'dec_odds', 'sub_odds', 'ko_odds'],
-                format_func=lambda x: {
-                    'odds': 'Odds Generales (Ganador)',
-                    'dec_odds': 'Método: Decisión',
-                    'sub_odds': 'Método: Sumisión',
-                    'ko_odds': 'Método: KO/TKO'
-                }[x]
+            # Modificado: Se amplía la altura a 210 e incrementamos los márgenes laterales y verticales para evitar textos cortados
+            fig_radar.update_layout(
+                polar=dict(
+                    radialaxis=dict(visible=True, gridcolor='rgba(255,255,255,0.1)', tickfont=dict(size=7, color='white')), 
+                    angularaxis=dict(tickfont=dict(size=8, color='white'))
+                ),
+                paper_bgcolor='rgba(0,0,0,0)', 
+                plot_bgcolor='rgba(0,0,0,0)', 
+                height=210, 
+                margin=dict(t=30, b=30, l=40, r=40), 
+                showlegend=False
             )
-        with col_opt2:
-            monto_inversion = st.number_input("Inversión base por pelea ($)", min_value=10, max_value=1000, value=100, step=10)
-        
-        fig_roi = generar_chart_roi([n1, n2], df_ufc, tipo_odds=tipo_seleccionado, inversion=monto_inversion)
-        st.plotly_chart(fig_roi, use_container_width=True)
+            st.plotly_chart(fig_radar, use_container_width=True, key="radar_multivariable")
+
+        st.space(50)
+        if not df_clean_filtrado.empty:
+            df_vic = df_clean_filtrado.groupby('cluster_arquetipo')[['win_by_KO_TKO', 'win_by_Submission', 'win_by_Decision']].sum().reset_index()
+            df_melt = df_vic.melt(id_vars=['cluster_arquetipo'], value_vars=['win_by_KO_TKO', 'win_by_Submission', 'win_by_Decision'], var_name='Metodo', value_name='Total')
+            df_melt['Metodo'] = df_melt['Metodo'].map({'win_by_KO_TKO': 'KO', 'win_by_Submission': 'SUB', 'win_by_Decision': 'DEC'})
             
-    with tab_tiempo:
-        fig_campana = generar_chart_distribucion_tiempo([n1, n2], df_ufc)
-        st.plotly_chart(fig_campana, use_container_width=True)
+            fig_equipos = px.bar(df_melt, x='Metodo', y='Total', color='cluster_arquetipo', barmode='group', color_discrete_map=colores_arquetipo, text_auto=True)
+            fig_equipos.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=180, margin=dict(t=5, b=5, l=5, r=5),
+                                      font=dict(size=9, color='white'), yaxis=dict(gridcolor='rgba(255,255,255,0.08)'), showlegend=False)
+            st.plotly_chart(fig_equipos, use_container_width=True, key="metodos_victoria_equipos")
 
-    tab_tiempo_div, tab_final_div ,tab_corr_ap = st.tabs([
-            "Tiempo por División",
-            "Finalización por División",
-            "Correlación por Apuestas"
-        ])
-    
-    with tab_tiempo_div:
-        fig_box = generar_boxplot_tiempo_divisiones(df_ufc)
-        
-        if fig_box.data:
-            st.plotly_chart(fig_box, use_container_width=True)
-        else:
-            st.warning("No hay suficientes registros de tiempo para procesar el análisis por divisiones.")
-
-    with tab_final_div:
-        fig_fin_div = generar_chart_finalizaciones_divisiones(df_ufc)
-        
-        if fig_fin_div.data:
-            st.plotly_chart(fig_fin_div, use_container_width=True)
-        else:
-            st.warning("No se encontraron los datos de 'weight_class' o 'method' para procesar el gráfico de finalizaciones.")
-
-    with tab_corr_ap:
-        label_actual = {
-            'odds': 'Odds Generales'
-        }[tipo_seleccionado]
-
-        fig_heat_corr = generar_heatmap_correlaciones(df_ufc, tipo_odds=tipo_seleccionado, label_odds=label_actual)
-        
-        if fig_heat_corr.data:
-            st.plotly_chart(fig_heat_corr, use_container_width=True)
-        else:
-            st.info("No hay suficientes cruces de variables para calcular la matriz de Pearson.")
-
+    # --- SECCIÓN INFERIOR: COMPARADOR INDIVIDUAL ---
     st.divider()
-    st.subheader("🧬 Mapa de ADN de Combate: Análisis Multivariado PCA")
-    st.markdown(
-        """
-        El **PCA (Análisis de Componentes Principales)** fusiona todas las métricas físicas y de rendimiento 
-        para descubrir los verdaderos perfiles de los peleadores. En lugar de ver números sueltos, 
-        este modelo matemático agrupa las estadísticas en ejes de comportamiento estilístico.
-        """
-    )
-
-    fig_var, fig_bi = generar_analisis_pca(df_ufc)
-
-    if fig_var is not None and fig_bi is not None:
-        col_v, col_b = st.columns(2)
-
-        with col_v:
-            st.markdown("### **Confiabilidad Matemática del Modelo**")
-            st.plotly_chart(fig_var, use_container_width=True)
-            st.caption(
-                "**Nota técnica:** La línea roja muestra que al usar solo los 3 primeros ejes, "
-                "logramos capturar casi el 60% de toda la información y variabilidad histórica de la UFC. "
-                "Esto valida que el mapa de la derecha es altamente representativo de la realidad."
-            )
-
-        with col_b:
-            st.markdown("### **Mapa de Estilos: ¿Qué define a cada eje?**")
-            st.plotly_chart(fig_bi, use_container_width=True)
-            st.caption(
-                "**Cómo leer el mapa:** "
-                "El **Eje Horizontal (PC1)** representa la **Morfología**: hacia la derecha están los peleadores altos y con mucho alcance (`Reach`, `Height`). "
-                "El **Eje Vertical (PC2)** representa la **Estrategia de Suelo**: hacia arriba están los expertos en lucha y derribos (`TD_landed`, `TD_pct`, `SUB_ATT`). "
-            )
-    else:
-        st.info(
-            "No hay suficientes registros numéricos sin valores nulos "
-            "para calcular la matriz de covarianza del PCA."
-        )
+    if st.session_state.peleadores_seleccionados:
+        col_cards_inf, col_tabs_inf = st.columns([1.0, 2.0])
         
+        with col_cards_inf:
+            for peleador in st.session_state.peleadores_seleccionados[:3]:
+                datos_p = df_clean_filtrado[df_clean_filtrado['fighter'] == peleador]
+                if not datos_p.empty:
+                    row_p = datos_p.iloc[0]
+                    # Obtenemos el arquetipo y su color correspondiente
+                    arquetipo_p = row_p['cluster_arquetipo']
+                    color_hex = colores_arquetipo.get(arquetipo_p, "#E63946") # Rojo por defecto si falla
+                    
+                    # Extraemos el RGB para el fondo semitransparente
+                    rgb = tuple(int(color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                    
+                    st.markdown(f"""
+                        <div style="
+                            background-color: rgba({rgb[0]},{rgb[1]},{rgb[2]},0.08); 
+                            border: 1px solid rgba({rgb[0]},{rgb[1]},{rgb[2]},0.3); 
+                            border-left: 5px solid {color_hex}; 
+                            padding: 6px 10px; 
+                            border-radius: 4px; 
+                            margin-bottom: 5px; 
+                            font-size:0.78em; 
+                            line-height:1.3;
+                        ">
+                            <b style="color: {color_hex}; font-size:1.1em;">{row_p['fighter']}</b> 
+                            <span style="color: rgba(255,255,255,0.6); font-size:0.9em;">({arquetipo_p})</span><br>
+                            <span style="color: #FFFFFF;">
+                                <b>Div:</b> {row_p['weight_class']} | 
+                                <b>Alt:</b> {row_p['Height_cms']:.0f}cm | 
+                                <b>Alc:</b> {row_p['Reach_cms']:.0f}cm
+                            </span>
+                        </div>
+                    """, unsafe_allow_html=True)
+            
+            # Botón Primario para limpiar selección
+            if st.button("Limpiar Selección", type="primary"):
+                st.session_state.peleadores_seleccionados = []
+                st.session_state.limpiar_contador += 1
+                st.rerun()
+
+        with col_tabs_inf:
+            df_analisis = df_base_grafica[df_base_grafica['fighter'].isin(st.session_state.peleadores_seleccionados)].copy()
+            if not df_analisis.empty:
+                tab_perf, tab_vics = st.tabs(["Atributos Tácticos", "Vías de Victoria"])
+                
+                with tab_perf:
+                    if "Originales" in tipo_escala:
+                        if df_analisis['avg_SIG_STR_pct'].max() <= 1.0: df_analisis['avg_SIG_STR_pct'] *= 100
+                        if df_analisis['avg_TD_pct'].max() <= 1.0: df_analisis['avg_TD_pct'] *= 100
+                    
+                    fig_prec = go.Figure()
+                    for idx, row in df_analisis.iterrows():
+                        fig_prec.add_trace(go.Bar(x=[labels_metricas[c] for c in metricas_parcoords], y=[row[c] for c in metricas_parcoords], name=row['fighter']))
+                    fig_prec.update_layout(barmode='group', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=140, margin=dict(t=5, b=5, l=5, r=5), font=dict(size=8, color='white'), showlegend=False)
+                    st.plotly_chart(fig_prec, use_container_width=True, key="precision_barras")
+                
+                with tab_vics:
+                    df_v_reales = df_clean_filtrado[df_clean_filtrado['fighter'].isin(st.session_state.peleadores_seleccionados)]
+                    df_m_vic = df_v_reales.melt(id_vars=['fighter'], value_vars=['win_by_KO_TKO', 'win_by_Submission', 'win_by_Decision'], var_name='Metodo', value_name='Total')
+                    df_m_vic['Metodo'] = df_m_vic['Metodo'].map({'win_by_KO_TKO': 'KO', 'win_by_Submission': 'SUB', 'win_by_Decision': 'DEC'})
+                    fig_vic = px.bar(df_m_vic, x='Metodo', y='Total', color='fighter', barmode='group', text_auto=True)
+                    fig_vic.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=140, margin=dict(t=5, b=5, l=5, r=5), font=dict(size=8, color='white'), showlegend=False)
+                    st.plotly_chart(fig_vic, use_container_width=True, key="victorias_barras")
+    else:
+        st.caption("Usa la herramienta de selección (Caja o Lazo) de los mapas superiores para activar el comparador individual.")
 else:
-    st.warning("Por favor, selecciona ambos peleadores en la parte superior para ver la comparación.")
+    st.error("Registros vectoriales insuficientes.")
